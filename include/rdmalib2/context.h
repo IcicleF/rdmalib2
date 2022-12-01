@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 #include "common.h"
 #include <spdlog/spdlog.h>
@@ -40,6 +41,32 @@ public:
                 "created context {:p} and protection domain {:p} for device {}",
                 reinterpret_cast<void *>(ctx), reinterpret_cast<void *>(pd),
                 dev_name == "" ? ibv_get_device_name(ctx->device) : dev_name);
+
+            if (ibv_exp_query_device(ctx, &dev_attr)) {
+                spdlog::error("failed to query device attributes");
+                panic_with_errno();
+            }
+            spdlog::trace("device {} has {} physical ports",
+                          ibv_get_device_name(ctx->device),
+                          dev_attr.phys_port_cnt);
+
+            for (uint8_t i = 1; i <= dev_attr.phys_port_cnt; i++) {
+                ibv_exp_port_attr port_attr = {};
+                if (ibv_exp_query_port(ctx, i, &port_attr)) {
+                    spdlog::error("failed to query port {}'s attributes", i);
+                    panic_with_errno();
+                }
+
+                // Use universal GID index 3 to fit both InfiniBand and RoCEv2
+                int gid_index = universal_gid_index % port_attr.gid_tbl_len;
+                ibv_gid gid = {};
+                if (ibv_query_gid(ctx, i, gid_index, &gid)) {
+                    spdlog::error("failed to query port {}'s gid", i);
+                    panic_with_errno();
+                }
+
+                port_attrs.emplace_back(gid, port_attr);
+            }
         } else {
             if (dev_name != "") {
                 spdlog::error("failed to create context and/or protection "
@@ -118,10 +145,30 @@ public:
     }
 
     ibv_context *get_context() const { return ctx; }
+
     ibv_pd *get_pd() const { return pd; }
+
     std::optional<ibv_exp_res_domain *> get_res_domain() const {
         return rd ? std::make_optional(rd)
                   : std::optional<ibv_exp_res_domain *>{};
+    }
+
+    ibv_gid get_gid(uint8_t port = 1) const {
+        if (port > port_attrs.size()) {
+            spdlog::error("port {} is out of port count bound {}", port,
+                          dev_attr.phys_port_cnt);
+            panic();
+        }
+        return std::get<0>(port_attrs[port - 1]);
+    }
+
+    uint32_t get_port_lid(uint8_t port = 1) const {
+        if (port > port_attrs.size()) {
+            spdlog::error("port {} is out of port count bound {}", port,
+                          dev_attr.phys_port_cnt);
+            panic();
+        }
+        return std::get<1>(port_attrs[port - 1]).lid;
     }
 
 public:
@@ -205,6 +252,12 @@ protected:
     ibv_context *ctx = nullptr;
     ibv_pd *pd = nullptr;
     ibv_exp_res_domain *rd = nullptr;
+
+    ibv_exp_device_attr dev_attr = {};
+    std::vector<std::tuple<ibv_gid, ibv_exp_port_attr>> port_attrs;
+
+public:
+    static constexpr int universal_gid_index = 3;
 };
 
 } // namespace rdmalib2

@@ -3,35 +3,23 @@
 #ifndef __RDMALIB2_QP_H__
 #define __RDMALIB2_QP_H__
 
-#include "context.h"
-#include "cq.h"
+#include "predeclare/qp_pre.h"
+#include "predeclare/verb_pre.h"
 
 namespace rdmalib2 {
 
-class rdma_qp {
-protected:
-    template <ibv_qp_type Type> struct qp_type_base {};
+template <ibv_qp_type Type>
+template <typename Wr>
+void rdma_qp<Type>::post_verb(rdma_verb<Wr> &) {
+    // TODO: implement this
+}
 
-public:
-    template <ibv_qp_type T>
-    rdma_qp(qp_type_base<T> const &type, int qp_depth, rdma_cq const &send_cq,
-            rdma_cq const &recv_cq) {}
-    ~rdma_qp() {}
-
-    ibv_qp *get_qp() const { return qp; }
-
-public:
-    typedef qp_type_base<IBV_QPT_RAW_PACKET> raw_packet;
-    typedef qp_type_base<IBV_QPT_RC> reliable_connection;
-    typedef qp_type_base<IBV_QPT_UD> unreliable_datagram;
-    typedef qp_type_base<IBV_QPT_XRC_SEND> xrc_send;
-    typedef qp_type_base<IBV_QPT_XRC_RECV> xrc_recv;
-    typedef qp_type_base<IBV_EXP_QPT_DC_INI> dc_initiator;
-
-protected:
-    ibv_qp *qp = nullptr;
-};
+template <ibv_qp_type Type>
+template <typename ForwardIt>
+void rdma_qp<Type>::post_verb(ForwardIt first, ForwardIt last) {
+    // TODO: implement this
+}
 
 } // namespace rdmalib2
 
-#endif
+#endif // __RDMALIB2_QP_H__

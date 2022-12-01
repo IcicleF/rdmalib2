@@ -5,6 +5,7 @@
 
 #include "context.h"
 #include <cstring>
+#include <limits>
 #include <new>
 #include <optional>
 #include <type_traits>
@@ -116,6 +117,7 @@ public:
         size = 0;
     }
 
+    rdma_context const &get_context() const { return ctx; }
     ibv_mr *get_mr() const { return mr; }
     uint32_t get_lkey() const { return mr->lkey; }
     uint32_t get_rkey() const { return mr->rkey; }
@@ -203,18 +205,37 @@ protected:
 class rdma_memory_slice {
     friend class rdma_memory_region;
 
-protected:
+public:
     rdma_memory_slice(rdma_memory_region const &region, void *ptr, size_t size)
         : region(region), ptr(ptr), size(size) {}
+
+    rdma_memory_slice(rdma_memory_region const &region)
+        : rdma_memory_slice(region, region.get_ptr(), region.get_size()) {}
+
     ~rdma_memory_slice() = default;
 
+    //! \brief Gets the pointer to the start position of the memory slice.
     void *get_ptr() const { return ptr; }
-    size_t get_size() const { return size; }
-    rdma_memory_region const &get_owner() const { return region; }
-    ibv_mr *get_raw_mr() const { return get_owner().get_mr(); }
-    uint32_t get_lkey() const { return get_owner().get_lkey(); }
-    uint32_t get_rkey() const { return get_owner().get_rkey(); }
 
+    //! \brief Gets the size of the memory slice.
+    size_t get_size() const { return size; }
+
+    //! \brief Gets the memory region that the memory slice belongs to.
+    rdma_memory_region const &get_region() const { return region; }
+
+    //! \brief Gets the raw ibv_mr instance of the memory region that the memory
+    //! slice belongs to.
+    ibv_mr *get_raw_mr() const { return get_region().get_mr(); }
+
+    //! \brief Gets the local key of the memory region that the memory slice
+    //! belongs to.
+    uint32_t get_lkey() const { return get_region().get_lkey(); }
+
+    //! \brief Gets the remote key of the memory region that the memory slice
+    //! belongs to.
+    uint32_t get_rkey() const { return get_region().get_rkey(); }
+
+    //! \brief Extracts a sub-slice of the memory slice.
     rdma_memory_slice slice(size_t offset, size_t size) const {
         if (offset + size > this->size) {
             spdlog::error("desired memory slice [{}, {}) is larger than the "
@@ -222,8 +243,9 @@ protected:
                           offset, offset + size, this->size);
             panic();
         }
-        return rdma_memory_slice{get_owner(), add_void_ptr(ptr, offset), size};
+        return rdma_memory_slice{region, add_void_ptr(ptr, offset), size};
     }
+
     rdma_memory_slice slice(size_t offset = 0) const {
         return slice(offset, size - offset);
     }
@@ -241,6 +263,18 @@ protected:
         return reinterpret_cast<T>(ptr);
     }
 
+    ibv_sge to_sge() const {
+        if (unlikely(size > std::numeric_limits<uint32_t>::max())) {
+            spdlog::error("memory slice size {} is larger than the maximum "
+                          "allowed size {}",
+                          size, std::numeric_limits<uint32_t>::max());
+            panic();
+        }
+        return {.addr = reinterpret_cast<uint64_t>(ptr),
+                .length = static_cast<uint32_t>(size),
+                .lkey = get_lkey()};
+    }
+
     rdma_memory_region const &region;
     void *ptr;
     size_t size;
@@ -248,7 +282,7 @@ protected:
 
 inline rdma_memory_slice rdma_memory_region::slice(size_t offset,
                                                    size_t size) const {
-    if (offset + size > this->size) {
+    if (unlikely(offset + size > this->size)) {
         spdlog::error("desired memory slice [{}, {}) is larger than the "
                       "region (size {})",
                       offset, offset + size, this->size);
@@ -260,6 +294,30 @@ inline rdma_memory_slice rdma_memory_region::slice(size_t offset,
 inline rdma_memory_slice rdma_memory_region::slice(size_t offset) const {
     return slice(offset, size - offset);
 }
+
+class rdma_remote_memory_slice {
+public:
+    rdma_remote_memory_slice(uint64_t addr, uint64_t size, uint32_t rkey)
+        : addr(addr), size(size), rkey(rkey) {}
+
+    rdma_remote_memory_slice(rdma_remote_memory_slice const &) = default;
+    rdma_remote_memory_slice &
+    operator=(rdma_remote_memory_slice const &) = default;
+
+    rdma_remote_memory_slice(rdma_remote_memory_slice &&) = default;
+    rdma_remote_memory_slice &operator=(rdma_remote_memory_slice &&) = default;
+
+    ~rdma_remote_memory_slice() = default;
+
+    uint64_t get_addr() const { return addr; }
+    uint64_t get_size() const { return size; }
+    uint32_t get_rkey() const { return rkey; }
+
+protected:
+    uint64_t addr;
+    uint64_t size;
+    uint64_t rkey;
+};
 
 } // namespace rdmalib2
 
