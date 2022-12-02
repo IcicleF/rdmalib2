@@ -29,8 +29,7 @@ public:
 
     template <typename... MemSlices>
     rdma_verb(MemSlices const &... sgl_entries) {
-        sgl.clear();
-        add_sgl_entry(sgl_entries...);
+        set_sgl_entry(std::forward<MemSlices...>(sgl_entries...));
     }
 
     rdma_verb(rdma_verb const &other)
@@ -41,12 +40,39 @@ public:
 
     ~rdma_verb() = default;
 
+    //! \brief Constructs, caches, and gets the corresponding work request
+    //! structure of the current verb object.
+    Wr const &get_wr() {
+        if (unlikely(!opcode.has_value())) {
+            spdlog::error("Constructing work request with no opcode");
+            panic();
+        }
+        construct_sgl();
+        construct_wr();
+        return wr;
+    }
+
+    //! \brief Sets the work request ID.
+    self_if_send &set_id(uint64_t id) {
+        if (wr_id != id) {
+            wr_id = id;
+            constructed_wr = false;
+        }
+        return *this;
+    }
+
     //! \brief Sets the opcode.
     template <ibv_exp_wr_opcode Opcode>
     self_if_send set_op(wr_type_base<Opcode> const &op) {
-        opcode = Opcode;
+        if (opcode != Opcode) {
+            opcode = Opcode;
+            constructed_wr = false;
+        }
         return *this;
     }
+
+    //! \brief Gets the opcode.
+    std::optional<ibv_exp_wr_opcode> get_op() const { return opcode; }
 
     //! \brief Sets the scatter-gather list.
     //!
@@ -57,7 +83,7 @@ public:
         sgl.clear();
         length = 0;
         constructed_real_sgl = false;
-        return add_sgl_entry(slices...);
+        return add_sgl_entry(std::forward<MemSlice...>(slices...));
     }
 
     //! \brief Appends entries to the scatter-gather list.
@@ -69,24 +95,17 @@ public:
         // then, we can only prevent long sg-lists at runtime
         RDMALIB2_ASSERT(sgl.size() < kMaxSge);
 
-        sgl.emplace_back(std::ref(head));
+        sgl.emplace_back(head);
         length += head.get_size();
         constructed_real_sgl = false;
         if constexpr (sizeof...(tail) == 0) {
             return *this;
         } else {
-            return add_sgl_entry(tail...);
+            return add_sgl_entry(std::forward<MemSlice...>(tail...));
         }
     }
 
     size_t get_total_msg_length() const { return length; }
-
-    std::pair<ibv_sge *, int> get_sgl() {
-        if (!constructed_real_sgl) {
-            construct_sgl();
-        }
-        return {real_sgl.data(), static_cast<int>(real_sgl.size())};
-    }
 
     self_if_send set_remote_memory(rdma_remote_memory_slice const &remote) {
         if (unlikely(opcode == IBV_EXP_WR_SEND ||
@@ -98,11 +117,15 @@ public:
                 remote.get_size(), length);
         }
         this->remote = remote;
+        constructed_wr = false;
         return *this;
     }
 
     self_if_send set_notify(bool notify) {
-        notified = notify;
+        if (notified != notify) {
+            notified = notify;
+            constructed_wr = false;
+        }
         return *this;
     }
 
@@ -110,13 +133,25 @@ public:
 
     self_if_send set_unnotified() { return set_notify(false); }
 
-    self_if_send set_imm_data(uint32_t imm_data) {
+    bool is_notified() const { return notified; }
+
+    self_if_send set_imm(uint32_t imm_data) {
         if (unlikely(opcode.has_value() && opcode != IBV_EXP_WR_SEND_WITH_IMM &&
                      opcode != IBV_EXP_WR_RDMA_WRITE_WITH_IMM)) {
             spdlog::warn(
                 "setting immediate data for non-imm (send/write) verb");
         }
+        this->carry_imm = true;
         this->imm_data = imm_data;
+        constructed_wr = false;
+        return *this;
+    }
+
+    self_if_send clear_imm() {
+        if (this->carry_imm) {
+            this->carry_imm = false;
+            constructed_wr = false;
+        }
         return *this;
     }
 
@@ -128,6 +163,7 @@ public:
         opcode = IBV_EXP_WR_ATOMIC_CMP_AND_SWP;
         this->compare_add = compare;
         this->swap = swap;
+        constructed_wr = false;
         return *this;
     }
 
@@ -138,6 +174,7 @@ public:
         }
         opcode = IBV_EXP_WR_ATOMIC_FETCH_AND_ADD;
         this->compare_add = add;
+        constructed_wr = false;
         return *this;
     }
 
@@ -153,6 +190,7 @@ public:
         this->swap = swap;
         this->compare_add_mask = compare_mask;
         this->swap_mask = swap_mask;
+        constructed_wr = false;
         return *this;
     }
 
@@ -165,6 +203,7 @@ public:
         opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD;
         this->compare_add = add;
         this->compare_add_mask = add_mask;
+        constructed_wr = false;
         return *this;
     }
 
@@ -175,6 +214,7 @@ public:
             spdlog::warn("setting CAS.compare for non-CAS verb");
         }
         this->compare_add = compare;
+        constructed_wr = false;
         return *this;
     }
 
@@ -185,6 +225,7 @@ public:
             spdlog::warn("setting CAS.swap for non-CAS verb");
         }
         this->swap = swap;
+        constructed_wr = false;
         return *this;
     }
 
@@ -195,6 +236,7 @@ public:
                 "setting masked-CAS.compare_mask for non-masked-CAS verb");
         }
         this->compare_add_mask = compare_mask;
+        constructed_wr = false;
         return *this;
     }
 
@@ -205,6 +247,7 @@ public:
                 "setting masked-CAS.swap_mask for non-masked-CAS verb");
         }
         this->swap_mask = swap_mask;
+        constructed_wr = false;
         return *this;
     }
 
@@ -215,6 +258,7 @@ public:
             spdlog::warn("setting FAA.add for non-FAA verb");
         }
         this->compare_add = add;
+        constructed_wr = false;
         return *this;
     }
 
@@ -224,6 +268,7 @@ public:
             spdlog::warn("setting masked-FAA.add_mask for non-masked-FAA verb");
         }
         this->compare_add_mask = add_mask;
+        constructed_wr = false;
         return *this;
     }
 
@@ -242,24 +287,111 @@ public:
 
 protected:
     void construct_sgl() {
-        real_sgl.resize(sgl.size());
-        for (size_t i = 0; i < sgl.size(); ++i) {
-            real_sgl[i] = sgl[i].get().to_sge();
+        if (!constructed_real_sgl) {
+            real_sgl.resize(sgl.size());
+            for (size_t i = 0; i < sgl.size(); ++i) {
+                real_sgl[i] = sgl[i].to_sge();
+            }
+            constructed_real_sgl = true;
         }
-        constructed_real_sgl = true;
     }
 
-    std::optional<ibv_exp_wr_opcode> opcode = std::nullopt;
-    std::vector<std::reference_wrapper<rdma_memory_slice const>> sgl = {};
-    size_t length = 0;
+    void construct_wr() {
+        if (!constructed_wr) {
+            wr = Wr{};
+            wr.wr_id = wr_id;
+            wr.next = nullptr;
+            wr.sg_list = real_sgl.data();
+            wr.num_sge = real_sgl.size();
+
+            if constexpr (std::is_same_v<Wr, ibv_exp_send_wr>) {
+                wr.exp_opcode = opcode.value();
+
+                // CQE generation
+                if (notified) {
+                    wr.exp_send_flags |= IBV_EXP_SEND_SIGNALED;
+                }
+
+                // Immediate data
+                if (carry_imm) {
+                    wr.ex.imm_data = imm_data;
+                }
+
+                // Non-send verbs require specifying remote memory
+                if (opcode != IBV_EXP_WR_SEND &&
+                    opcode != IBV_EXP_WR_SEND_WITH_IMM) {
+                    RDMALIB2_ASSERT(remote.has_value());
+                }
+
+                if (opcode == IBV_EXP_WR_RDMA_READ ||
+                    opcode == IBV_EXP_WR_RDMA_WRITE ||
+                    opcode == IBV_EXP_WR_RDMA_WRITE_WITH_IMM) {
+                    // read/write
+                    wr.wr.rdma.remote_addr = remote->get_addr();
+                    wr.wr.rdma.rkey = remote->get_rkey();
+                } else if (opcode == IBV_EXP_WR_ATOMIC_CMP_AND_SWP ||
+                           opcode == IBV_EXP_WR_ATOMIC_FETCH_AND_ADD) {
+                    // atomics
+                    RDMALIB2_ASSERT(is_atomic_capable());
+
+                    wr.wr.atomic.remote_addr = remote->get_addr();
+                    wr.wr.atomic.rkey = remote->get_rkey();
+                    wr.wr.atomic.compare_add = compare_add;
+                    wr.wr.atomic.swap = swap;
+                } else if (opcode == IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP ||
+                           opcode ==
+                               IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD) {
+                    // masked atomics
+                    RDMALIB2_ASSERT(is_atomic_capable());
+
+                    wr.ext_op.masked_atomics.remote_addr = remote->get_addr();
+                    wr.ext_op.masked_atomics.rkey = remote->get_rkey();
+
+                    if (opcode == IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP) {
+                        wr.ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap
+                            .compare_val = compare_add;
+                        wr.ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap
+                            .swap_val = swap;
+                        wr.ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap
+                            .compare_mask = compare_add_mask;
+                        wr.ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap
+                            .swap_mask = swap_mask;
+                    } else {
+                        wr.ext_op.masked_atomics.wr_data.inline_data.op
+                            .fetch_add.add_val = compare_add;
+                        wr.ext_op.masked_atomics.wr_data.inline_data.op
+                            .fetch_add.field_boundary = compare_add_mask;
+                    }
+                } else {
+                    spdlog::error("Unsupported work request type: {}", *opcode);
+                    panic();
+                }
+            }
+
+            constructed_wr = true;
+        }
+    }
+
+    bool is_atomic_capable() const {
+        return length == sizeof(uint64_t) && sgl.size() == 1 &&
+               sgl[0].is_aligned();
+    }
+
+    // Cached sglist & work request
     std::vector<ibv_sge> real_sgl = {};
     bool constructed_real_sgl = false;
+    Wr wr;
+    bool constructed_wr = false;
 
+    // Original information
+    uint64_t wr_id;
+    std::optional<ibv_exp_wr_opcode> opcode = std::nullopt;
+    std::vector<rdma_memory_slice> sgl = {};
+    size_t length = 0;
     std::optional<rdma_remote_memory_slice> remote = std::nullopt;
     bool notified = false;
     bool carry_imm = false;
     uint32_t imm_data = 0;
-
     uint64_t compare_add = 0;
     uint64_t swap = 0;
     uint64_t compare_add_mask = 0;

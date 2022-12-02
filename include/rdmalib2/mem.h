@@ -275,6 +275,10 @@ public:
                 .lkey = get_lkey()};
     }
 
+    bool is_aligned(size_t alignment = 8) const {
+        return reinterpret_cast<uintptr_t>(ptr) % alignment == 0;
+    }
+
     rdma_memory_region const &region;
     void *ptr;
     size_t size;
