@@ -14,6 +14,9 @@ namespace rdmalib2 {
 template <ibv_qp_type Type> class rdma_qp;
 
 template <typename Wr> class rdma_verb {
+public:
+    using wr_type = Wr;
+
 protected:
     template <ibv_exp_wr_opcode Opcode> struct wr_type_base {
         static constexpr ibv_exp_wr_opcode opcode = Opcode;
@@ -49,7 +52,22 @@ public:
         }
         construct_sgl();
         construct_wr();
+        wr.next = nullptr;
         return wr;
+    }
+
+    //! \brief Temporarily sets the next work request in the chain.
+    //! The next work request pointer will be reset after the next call to
+    //! get_wr().
+    self_if_send &set_next(rdma_verb const &next) {
+        wr.next = const_cast<Wr *>(&next.get_wr());
+        return *this;
+    }
+
+    //! \brief Clears the next work request pointer.
+    self_if_send &clear_next() {
+        wr.next = nullptr;
+        return *this;
     }
 
     //! \brief Sets the work request ID.

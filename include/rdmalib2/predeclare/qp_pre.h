@@ -61,6 +61,11 @@ public:
             : gid(gid), lid(lid), qp_num(qp_num), psn(psn) {}
     };
 
+    info get_info() const {
+        return {ctx.get_gid(), ctx.get_port_lid(port), qp->qp_num,
+                universal_init_psn};
+    }
+
 public:
     template <uint32_t C, uint32_t F>
     rdma_qp(rdma_context const &ctx, int qp_depth, rdma_cq const &send_cq,
@@ -141,10 +146,10 @@ public:
                 universal_init_psn};
     }
 
-    template <typename Wr> void post_verb(rdma_verb<Wr> &);
+    template <typename Wr> void post_verb(rdma_verb<Wr> &) const;
 
     template <typename ForwardIt>
-    void post_verb(ForwardIt first, ForwardIt last);
+    void post_verb(ForwardIt first, ForwardIt last) const;
 
 public:
     typedef qp_feature_base<0, 0> no_features;
