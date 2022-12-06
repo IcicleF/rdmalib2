@@ -114,7 +114,7 @@ public:
         other.rd = nullptr;
     }
 
-    rdma_context &operator=(rdma_context &&other) noexcept {
+    rdma_context &operator=(rdma_context &&other) & noexcept {
         if (this != &other) {
             this->~rdma_context();
             new (this) rdma_context(std::move(other));

@@ -29,8 +29,11 @@ endif()
 include_directories(SYSTEM include)
 link_libraries(ibverbs pthread)
 
+find_package(Catch2 3 REQUIRED)
+
 file(GLOB TEST_SOURCES ${CMAKE_CURRENT_LIST_DIR}/tests/*.cpp)
 foreach(src ${TEST_SOURCES})
     get_filename_component(test_name ${src} NAME_WE)
     add_executable(${test_name} ${src})
+    target_link_libraries(${test_name} PRIVATE Catch2::Catch2WithMain)
 endforeach()

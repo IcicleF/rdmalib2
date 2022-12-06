@@ -38,8 +38,20 @@ public:
     rdma_verb(rdma_verb const &other)
         : sgl(other.sgl), notified(other.notified) {}
 
-    rdma_verb(rdma_verb &&other)
+    rdma_verb(rdma_verb &&other) noexcept
         : sgl(std::move(other.sgl)), notified(std::move(other.notified)) {}
+
+    rdma_verb &operator=(rdma_verb const &other) & {
+        sgl = other.sgl;
+        notified = other.notified;
+        return *this;
+    }
+
+    rdma_verb &operator=(rdma_verb &&other) & noexcept {
+        sgl = std::move(other.sgl);
+        notified = std::move(other.notified);
+        return *this;
+    }
 
     ~rdma_verb() = default;
 

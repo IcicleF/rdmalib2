@@ -68,8 +68,9 @@ public:
 
 public:
     template <uint32_t C, uint32_t F>
-    rdma_qp(rdma_context const &ctx, int qp_depth, rdma_cq const &send_cq,
-            rdma_cq const &recv_cq, qp_feature_base<C, F> const &features)
+    rdma_qp(rdma_context const &ctx, rdma_cq const &send_cq,
+            rdma_cq const &recv_cq, int qp_depth,
+            qp_feature_base<C, F> const &features)
         : ctx(ctx) {
         static_assert(Type != IBV_QPT_XRC_SEND, "XRC not implemented");
         static_assert(Type != IBV_QPT_XRC_RECV, "XRC not implemented");
@@ -92,6 +93,10 @@ public:
             panic_with_errno();
         }
     }
+
+    rdma_qp(rdma_context const &ctx, rdma_cq const &send_cq,
+            rdma_cq const &recv_cq, int qp_depth = kQpDepth)
+        : rdma_qp(ctx, qp_depth, send_cq, recv_cq, no_features{}) {}
 
     rdma_qp(rdma_qp const &) = delete;
     rdma_qp &operator=(rdma_qp const &) = delete;

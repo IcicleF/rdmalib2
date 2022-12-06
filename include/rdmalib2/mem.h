@@ -91,7 +91,7 @@ public:
         other.size = 0;
     }
 
-    rdma_memory_region &operator=(rdma_memory_region &&other) noexcept {
+    rdma_memory_region &operator=(rdma_memory_region &&other) & noexcept {
         if (this != &other) {
             this->~rdma_memory_region();
             new (this) rdma_memory_region(std::move(other));

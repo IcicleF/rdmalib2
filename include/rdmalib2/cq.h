@@ -11,7 +11,7 @@ namespace rdmalib2 {
 
 class rdma_cq {
 public:
-    rdma_cq(rdma_context const &ctx, int cq_depth = default_cq_depth,
+    rdma_cq(rdma_context const &ctx, int cq_depth = kCqDepth,
             void *cq_context = nullptr) {
         auto cq = create_rdma_cq(ctx, cq_depth, cq_context);
         if (cq.has_value()) {
@@ -36,7 +36,7 @@ public:
         other.cq = nullptr;
     }
 
-    rdma_cq &operator=(rdma_cq &&other) noexcept {
+    rdma_cq &operator=(rdma_cq &&other) & noexcept {
         if (this != &other) {
             this->~rdma_cq();
             new (this) rdma_cq(std::move(other));
@@ -72,8 +72,6 @@ public:
         }
         return cq ? std::make_optional(cq) : std::nullopt;
     }
-
-    static constexpr int default_cq_depth = 256;
 
     ibv_cq *cq = nullptr;
 };
