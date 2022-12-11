@@ -15,16 +15,16 @@ void rdma_qp<Type>::post_verb(rdma_verb<Wr> &verb) const {
     static_assert(std::is_same_v<Wr, ibv_exp_send_wr> ||
                       std::is_same_v<Wr, ibv_recv_wr>,
                   "Unknown work request type");
-    RDMALIB2_ASSERT(verb.get_op().has_value());
-    RDMALIB2_ASSERT((qp_verb_compat<Type, Wr>{})(*(verb.get_op())));
     int ret = 0;
     Wr *bad_wr = nullptr;
 
     if constexpr (std::is_same_v<Wr, ibv_exp_send_wr>) {
-        ret = ibv_exp_post_send(qp, &verb.get_wr(), &bad_wr);
+        RDMALIB2_ASSERT(verb.get_op().has_value());
+        RDMALIB2_ASSERT((qp_verb_compat<Type, Wr>{})(*(verb.get_op())));
+        ret = ibv_exp_post_send(qp, const_cast<Wr *>(&verb.get_wr()), &bad_wr);
     }
     if constexpr (std::is_same_v<Wr, ibv_recv_wr>) {
-        ret = ibv_post_recv(qp, &verb.get_wr(), &bad_wr);
+        ret = ibv_post_recv(qp, const_cast<Wr *>(&verb.get_wr()), &bad_wr);
     }
 
     if (unlikely(ret)) {

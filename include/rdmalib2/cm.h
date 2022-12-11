@@ -33,7 +33,16 @@ public:
     void connect(rdma_rc_qp &qp, std::string_view ip,
                  uint16_t port = kRpcPort) {
         hrpc::client cli{ip, port};
-        auto info = cli.call<rdma_rc_qp::info>(RPC_ESTABLISH, qp.get_info());
+        auto self_info = qp.get_info();
+        auto info = cli.call<rdma_rc_qp::info>(RPC_ESTABLISH, self_info);
+
+        spdlog::trace(
+            "connected local qp <gid {:x}-{:x}, lid {}, qpn {}, psn {}> to "
+            "remote qp <gid {:x}-{:x}, lid {}, qpn {}, psn {}>",
+            self_info.gid.global.subnet_prefix,
+            self_info.gid.global.interface_id, self_info.lid, self_info.qp_num,
+            self_info.psn, info.gid.global.subnet_prefix,
+            info.gid.global.interface_id, info.lid, info.qp_num, info.psn);
         qp.connect(info);
     }
 
@@ -42,27 +51,43 @@ public:
         svr.bind(RPC_ESTABLISH, [this, qp_callback](rdma_rc_qp::info info) {
             rdma_cq send_cq{ctx}, recv_cq{ctx};
             rdma_rc_qp qp{ctx, send_cq, recv_cq, kQpDepth,
-                          rdma_rc_qp::extended_atomics{}};
+                          rdma_rc_qp::extended_atomics};
             qp.connect(info);
 
             auto self_info = qp.get_info();
+            spdlog::trace(
+                "connected local qp <gid {:x}-{:x}, lid {}, qpn {}, psn {}> to "
+                "remote qp <gid {:x}-{:x}, lid {}, qpn {}, psn {}>",
+                self_info.gid.global.subnet_prefix,
+                self_info.gid.global.interface_id, self_info.lid,
+                self_info.qp_num, self_info.psn, info.gid.global.subnet_prefix,
+                info.gid.global.interface_id, info.lid, info.qp_num, info.psn);
+
             qp_callback(std::move(qp), std::move(send_cq), std::move(recv_cq));
             return self_info;
         });
         svr.run();
     }
 
-    void run_server(qp_callback_with_stop_t qp_callback,
-                    uint16_t port = kRpcPort) {
+    void run_server_with_stop(qp_callback_with_stop_t qp_callback,
+                              uint16_t port = kRpcPort) {
         hrpc::server svr{port};
         svr.bind(RPC_ESTABLISH, [this, qp_callback](hrpc::server *self,
                                                     rdma_rc_qp::info info) {
             rdma_cq send_cq{ctx}, recv_cq{ctx};
             rdma_rc_qp qp{ctx, send_cq, recv_cq, kQpDepth,
-                          rdma_rc_qp::extended_atomics{}};
+                          rdma_rc_qp::extended_atomics};
             qp.connect(info);
 
             auto self_info = qp.get_info();
+            spdlog::trace(
+                "connected local qp <gid {:x}-{:x}, lid {}, qpn {}, psn {}> to "
+                "remote qp <gid {:x}-{:x}, lid {}, qpn {}, psn {}>",
+                self_info.gid.global.subnet_prefix,
+                self_info.gid.global.interface_id, self_info.lid,
+                self_info.qp_num, self_info.psn, info.gid.global.subnet_prefix,
+                info.gid.global.interface_id, info.lid, info.qp_num, info.psn);
+
             bool should_stop = qp_callback(std::move(qp), std::move(send_cq),
                                            std::move(recv_cq));
             if (should_stop) {

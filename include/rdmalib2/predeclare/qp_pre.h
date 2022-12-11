@@ -56,9 +56,6 @@ public:
         uint32_t lid;
         uint32_t qp_num;
         uint32_t psn;
-
-        info(ibv_gid gid, uint32_t lid, uint32_t qp_num, uint32_t psn)
-            : gid(gid), lid(lid), qp_num(qp_num), psn(psn) {}
     };
 
     info get_info() const {
@@ -76,27 +73,26 @@ public:
         static_assert(Type != IBV_QPT_XRC_RECV, "XRC not implemented");
         static_assert(Type != IBV_EXP_QPT_DC_INI, "DC QP not implemented");
 
-        auto qp =
-            create_rdma_qp(ctx, Type, qp_depth, send_cq, recv_cq, features);
+        auto qp = create_rdma_qp(ctx, qp_depth, send_cq, recv_cq, features);
         if (qp.has_value()) {
             this->qp = qp.value();
             spdlog::trace(
                 "created queue pair {:p}, type {}, depth {} for context {:p}",
                 reinterpret_cast<void *>(this->qp), qptype_to_string(Type),
-                qp_depth, reinterpret_cast<void const *>(&ctx));
+                qp_depth, reinterpret_cast<void const *>(ctx.get_context()));
         } else {
             spdlog::error(
                 "failed to create queue pair with type {}, depth {} for "
                 "context {:p}",
                 qptype_to_string(Type), qp_depth,
-                reinterpret_cast<void const *>(&ctx));
+                reinterpret_cast<void const *>(ctx.get_context()));
             panic_with_errno();
         }
     }
 
     rdma_qp(rdma_context const &ctx, rdma_cq const &send_cq,
             rdma_cq const &recv_cq, int qp_depth = kQpDepth)
-        : rdma_qp(ctx, qp_depth, send_cq, recv_cq, no_features{}) {}
+        : rdma_qp(ctx, send_cq, recv_cq, qp_depth, no_features) {}
 
     rdma_qp(rdma_qp const &) = delete;
     rdma_qp &operator=(rdma_qp const &) = delete;
@@ -105,7 +101,7 @@ public:
         other.qp = nullptr;
     }
 
-    rdma_qp &operator=(rdma_qp &&other) noexcept {
+    rdma_qp &operator=(rdma_qp &&other) & noexcept {
         if (this != &other) {
             this->~rdma_qp();
             new (this) rdma_qp(std::move(other));
@@ -124,7 +120,7 @@ public:
 
     ibv_qp *get_qp() const { return qp; }
 
-    rdma_qp &bind_port(uint8_t port = 1) {
+    rdma_qp<Type> &bind_port(uint8_t port = 1) {
         this->port = port;
         if constexpr (Type == IBV_QPT_UD || Type == IBV_QPT_RAW_PACKET) {
             static constexpr uint32_t ud_qkey = 0x11111111;
@@ -136,7 +132,7 @@ public:
         return *this;
     }
 
-    rdma_qp &connect(info const &remote, uint8_t port = 1) {
+    rdma_qp<Type> &connect(info const &remote, uint8_t port = 1) {
         RDMALIB2_ASSERT(qp->qp_type == IBV_QPT_RC);
 
         modify_qp_to_init(qp, port);
@@ -157,12 +153,12 @@ public:
     void post_verb(ForwardIt first, ForwardIt last) const;
 
 public:
-    typedef qp_feature_base<0, 0> no_features;
-    typedef qp_feature_base<IBV_EXP_QP_INIT_ATTR_ATOMICS_ARG, 0>
-        extended_atomics;
-    typedef qp_feature_base<IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS,
-                            IBV_EXP_QP_CREATE_EC_PARITY_EN>
-        erasure_coding;
+    static constexpr qp_feature_base<0, 0> no_features = {};
+    static constexpr qp_feature_base<IBV_EXP_QP_INIT_ATTR_ATOMICS_ARG, 0>
+        extended_atomics = {};
+    static constexpr qp_feature_base<IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS,
+                                     IBV_EXP_QP_CREATE_EC_PARITY_EN>
+        erasure_coding = {};
 
 protected:
     template <uint32_t CompMask, uint32_t CreateFlags>
@@ -189,19 +185,19 @@ protected:
         }
 
         // Extended atomics feature
-        if constexpr (CompMask & extended_atomics::comp_mask) {
+        if constexpr (CompMask & extended_atomics.comp_mask) {
             static_assert(Type == IBV_QPT_RC,
                           "extended atomics only supported for RC QPs");
 
-            init_attr.comp_mask |= extended_atomics::comp_mask;
-            init_attr.exp_create_flags |= extended_atomics::create_flags;
+            init_attr.comp_mask |= extended_atomics.comp_mask;
+            init_attr.exp_create_flags |= extended_atomics.create_flags;
             init_attr.max_atomic_arg = sizeof(uint64_t);
         }
 
         // Erasure coding offloading feature
-        if constexpr (CompMask & erasure_coding::comp_mask) {
-            init_attr.comp_mask |= erasure_coding::comp_mask;
-            init_attr.exp_create_flags |= erasure_coding::create_flags;
+        if constexpr (CompMask & erasure_coding.comp_mask) {
+            init_attr.comp_mask |= erasure_coding.comp_mask;
+            init_attr.exp_create_flags |= erasure_coding.create_flags;
         }
 
         ibv_qp *qp = ibv_exp_create_qp(ctx.get_context(), &init_attr);
@@ -210,7 +206,7 @@ protected:
 
     static void modify_qp_to_init(ibv_qp *qp, uint8_t port_num = 1,
                                   uint32_t ud_qkey = 0) {
-        RDMALIB2_ASSERT(qp->state == IBV_QPS_INIT);
+        RDMALIB2_ASSERT(qp->state == IBV_QPS_RESET);
 
         ibv_qp_attr attr = {};
         attr.qp_state = IBV_QPS_INIT;
@@ -318,7 +314,7 @@ protected:
     ibv_qp *qp = nullptr;
     uint8_t port = 1;
 
-    static constexpr uint32_t universal_init_psn = 0;
+    static constexpr uint32_t universal_init_psn = 3000;
 }; // namespace rdmalib2
 
 typedef rdma_qp<IBV_QPT_RAW_PACKET> rdma_raw_packet_qp;

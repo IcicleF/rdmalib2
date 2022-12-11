@@ -13,25 +13,31 @@ namespace rdmalib2 {
 // Predeclaration of rdma_qp class
 template <ibv_qp_type Type> class rdma_qp;
 
+template <ibv_exp_wr_opcode Opcode> struct wr_type_base {
+    static constexpr ibv_exp_wr_opcode opcode = Opcode;
+};
+
+static constexpr wr_type_base<IBV_EXP_WR_SEND> op_send = {};
+static constexpr wr_type_base<IBV_EXP_WR_SEND_WITH_IMM> op_send_imm = {};
+static constexpr wr_type_base<IBV_EXP_WR_RDMA_WRITE> op_write = {};
+static constexpr wr_type_base<IBV_EXP_WR_RDMA_WRITE_WITH_IMM> op_write_imm = {};
+static constexpr wr_type_base<IBV_EXP_WR_RDMA_READ> op_read = {};
+static constexpr wr_type_base<IBV_EXP_WR_ATOMIC_CMP_AND_SWP> op_cas = {};
+static constexpr wr_type_base<IBV_EXP_WR_ATOMIC_FETCH_AND_ADD> op_faa = {};
+static constexpr wr_type_base<IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP>
+    op_masked_cas = {};
+static constexpr wr_type_base<IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD>
+    op_masked_faa = {};
+
 template <typename Wr> class rdma_verb {
 public:
+    // Expose work request type for public use
     using wr_type = Wr;
-
-protected:
-    template <ibv_exp_wr_opcode Opcode> struct wr_type_base {
-        static constexpr ibv_exp_wr_opcode opcode = Opcode;
-    };
-
-    using self_if_send =
-        std::enable_if_t<std::is_same_v<Wr, ibv_exp_send_wr>, rdma_verb &>;
-    using self_if_recv =
-        std::enable_if_t<std::is_same_v<Wr, ibv_recv_wr>, rdma_verb &>;
 
 public:
     rdma_verb() = default;
 
-    template <typename... MemSlices>
-    rdma_verb(MemSlices const &... sgl_entries) {
+    template <typename... MemSlices> rdma_verb(MemSlices... sgl_entries) {
         set_sgl_entry(std::forward<MemSlices...>(sgl_entries...));
     }
 
@@ -58,11 +64,12 @@ public:
     //! \brief Constructs, caches, and gets the corresponding work request
     //! structure of the current verb object.
     Wr const &get_wr() {
-        if (unlikely(!opcode.has_value())) {
-            spdlog::error("Constructing work request with no opcode");
-            panic();
+        if constexpr (std::is_same_v<Wr, ibv_exp_send_wr>) {
+            if (unlikely(!opcode.has_value())) {
+                spdlog::error("constructing send work request with no opcode");
+                panic();
+            }
         }
-        construct_sgl();
         construct_wr();
         wr.next = nullptr;
         return wr;
@@ -71,19 +78,19 @@ public:
     //! \brief Temporarily sets the next work request in the chain.
     //! The next work request pointer will be reset after the next call to
     //! get_wr().
-    self_if_send &set_next(rdma_verb const &next) {
+    rdma_verb<Wr> &set_next(rdma_verb const &next) {
         wr.next = const_cast<Wr *>(&next.get_wr());
         return *this;
     }
 
     //! \brief Clears the next work request pointer.
-    self_if_send &clear_next() {
+    rdma_verb<Wr> &clear_next() {
         wr.next = nullptr;
         return *this;
     }
 
     //! \brief Sets the work request ID.
-    self_if_send &set_id(uint64_t id) {
+    rdma_verb<Wr> &set_id(uint64_t id) {
         if (wr_id != id) {
             wr_id = id;
             constructed_wr = false;
@@ -93,7 +100,9 @@ public:
 
     //! \brief Sets the opcode.
     template <ibv_exp_wr_opcode Opcode>
-    self_if_send set_op(wr_type_base<Opcode> const &op) {
+    rdma_verb<Wr> &set_op(wr_type_base<Opcode> const &op) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set opcode for recv verb");
         if (opcode != Opcode) {
             opcode = Opcode;
             constructed_wr = false;
@@ -102,14 +111,18 @@ public:
     }
 
     //! \brief Gets the opcode.
-    std::optional<ibv_exp_wr_opcode> get_op() const { return opcode; }
+    std::optional<ibv_exp_wr_opcode> get_op() const {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot acquire opcode from recv verb");
+        return opcode;
+    }
 
     //! \brief Sets the scatter-gather list.
     //!
     //! Each parameter accounts for a scatter-gather list entry.
     //! The original scatter-gather list will be cleared.
     template <typename... MemSlice>
-    rdma_verb &set_sgl_entry(MemSlice... slices) {
+    rdma_verb<Wr> &set_sgl_entry(MemSlice... slices) {
         sgl.clear();
         length = 0;
         constructed_real_sgl = false;
@@ -118,7 +131,8 @@ public:
 
     //! \brief Appends entries to the scatter-gather list.
     template <typename... MemSlice>
-    rdma_verb &add_sgl_entry(rdma_memory_slice const &head, MemSlice... tail) {
+    rdma_verb<Wr> &add_sgl_entry(rdma_memory_slice const &head,
+                                 MemSlice... tail) {
         // reject long sg-lists at compile time
         static_assert(1 + sizeof...(tail) <= kMaxSge,
                       "too many scatter-gather list entries");
@@ -137,7 +151,9 @@ public:
 
     size_t get_total_msg_length() const { return length; }
 
-    self_if_send set_remote_memory(rdma_remote_memory_slice const &remote) {
+    rdma_verb<Wr> &set_remote_memory(rdma_remote_memory_slice const &remote) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set remote memory for recv verb");
         if (unlikely(opcode == IBV_EXP_WR_SEND ||
                      opcode == IBV_EXP_WR_SEND_WITH_IMM)) {
             spdlog::warn("specifying remote memory for send verbs");
@@ -151,7 +167,9 @@ public:
         return *this;
     }
 
-    self_if_send set_notify(bool notify) {
+    rdma_verb<Wr> &set_notify(bool notify) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set notify for recv verb");
         if (notified != notify) {
             notified = notify;
             constructed_wr = false;
@@ -159,13 +177,20 @@ public:
         return *this;
     }
 
-    self_if_send set_notified() { return set_notify(true); }
+    rdma_verb<Wr> &set_notified() { return set_notify(true); }
 
-    self_if_send set_unnotified() { return set_notify(false); }
+    rdma_verb<Wr> &set_unnotified() { return set_notify(false); }
 
-    bool is_notified() const { return notified; }
+    bool is_notified() const {
+        if constexpr (std::is_same_v<Wr, ibv_exp_send_wr>) {
+            return notified;
+        }
+        return true;
+    }
 
-    self_if_send set_imm(uint32_t imm_data) {
+    rdma_verb<Wr> &set_imm(uint32_t imm_data) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set immediate data for recv verb");
         if (unlikely(opcode.has_value() && opcode != IBV_EXP_WR_SEND_WITH_IMM &&
                      opcode != IBV_EXP_WR_RDMA_WRITE_WITH_IMM)) {
             spdlog::warn(
@@ -177,7 +202,9 @@ public:
         return *this;
     }
 
-    self_if_send clear_imm() {
+    rdma_verb<Wr> &clear_imm() {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot clear immediate data for recv verb");
         if (this->carry_imm) {
             this->carry_imm = false;
             constructed_wr = false;
@@ -185,7 +212,9 @@ public:
         return *this;
     }
 
-    self_if_send set_cas(uint64_t compare, uint64_t swap) {
+    rdma_verb<Wr> &set_cas(uint64_t compare, uint64_t swap) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set CAS for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_ATOMIC_CMP_AND_SWP)) {
             spdlog::warn("setting CAS overwrites opcode for non-CAS verb");
@@ -197,7 +226,9 @@ public:
         return *this;
     }
 
-    self_if_send set_faa(uint64_t add) {
+    rdma_verb<Wr> &set_faa(uint64_t add) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set FAA for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_ATOMIC_FETCH_AND_ADD)) {
             spdlog::warn("setting FAA overwrites opcode for non-FAA verb");
@@ -208,8 +239,10 @@ public:
         return *this;
     }
 
-    self_if_send set_masked_cas(uint64_t compare, uint64_t swap,
-                                uint64_t compare_mask, uint64_t swap_mask) {
+    rdma_verb<Wr> &set_masked_cas(uint64_t compare, uint64_t swap,
+                                  uint64_t compare_mask, uint64_t swap_mask) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set masked-CAS for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP)) {
             spdlog::warn(
@@ -224,7 +257,9 @@ public:
         return *this;
     }
 
-    self_if_send set_masked_faa(uint64_t add, uint64_t add_mask) {
+    rdma_verb<Wr> &set_masked_faa(uint64_t add, uint64_t add_mask) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set masked-FAA for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD)) {
             spdlog::warn(
@@ -237,7 +272,9 @@ public:
         return *this;
     }
 
-    self_if_send set_compare(uint64_t compare) {
+    rdma_verb<Wr> &set_compare(uint64_t compare) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set CAS.compare for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_ATOMIC_CMP_AND_SWP &&
                      opcode != IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP)) {
@@ -248,7 +285,9 @@ public:
         return *this;
     }
 
-    self_if_send set_swap(uint64_t swap) {
+    rdma_verb<Wr> &set_swap(uint64_t swap) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set CAS.swap for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_ATOMIC_CMP_AND_SWP &&
                      opcode != IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP)) {
@@ -259,7 +298,9 @@ public:
         return *this;
     }
 
-    self_if_send set_compare_mask(uint64_t compare_mask) {
+    rdma_verb<Wr> &set_compare_mask(uint64_t compare_mask) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set masked-CAS.compare_mask for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP)) {
             spdlog::warn(
@@ -270,7 +311,9 @@ public:
         return *this;
     }
 
-    self_if_send set_swap_mask(uint64_t swap_mask) {
+    rdma_verb<Wr> &set_swap_mask(uint64_t swap_mask) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set masked-CAS.swap_mask for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP)) {
             spdlog::warn(
@@ -281,7 +324,9 @@ public:
         return *this;
     }
 
-    self_if_send set_add(uint64_t add) {
+    rdma_verb<Wr> &set_add(uint64_t add) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set FAA.add for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_ATOMIC_FETCH_AND_ADD &&
                      opcode != IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD)) {
@@ -292,7 +337,9 @@ public:
         return *this;
     }
 
-    self_if_send set_add_mask(uint64_t add_mask) {
+    rdma_verb<Wr> &set_add_mask(uint64_t add_mask) {
+        static_assert(std::is_same_v<Wr, ibv_exp_send_wr>,
+                      "cannot set masked-FAA.add_mask for recv verb");
         if (unlikely(opcode.has_value() &&
                      opcode != IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD)) {
             spdlog::warn("setting masked-FAA.add_mask for non-masked-FAA verb");
@@ -303,17 +350,6 @@ public:
     }
 
     template <ibv_qp_type Type> void execute(rdma_qp<Type> const &qp);
-
-public:
-    typedef wr_type_base<IBV_EXP_WR_SEND> send;
-    typedef wr_type_base<IBV_EXP_WR_SEND_WITH_IMM> send_imm;
-    typedef wr_type_base<IBV_EXP_WR_RDMA_WRITE> write;
-    typedef wr_type_base<IBV_EXP_WR_RDMA_WRITE_WITH_IMM> write_imm;
-    typedef wr_type_base<IBV_EXP_WR_RDMA_READ> read;
-    typedef wr_type_base<IBV_EXP_WR_ATOMIC_CMP_AND_SWP> cas;
-    typedef wr_type_base<IBV_EXP_WR_ATOMIC_FETCH_AND_ADD> faa;
-    typedef wr_type_base<IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP> masked_cas;
-    typedef wr_type_base<IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD> masked_faa;
 
 protected:
     void construct_sgl() {
@@ -327,6 +363,7 @@ protected:
     }
 
     void construct_wr() {
+        construct_sgl();
         if (!constructed_wr) {
             wr = Wr{};
             wr.wr_id = wr_id;
@@ -392,8 +429,9 @@ protected:
                         wr.ext_op.masked_atomics.wr_data.inline_data.op
                             .fetch_add.field_boundary = compare_add_mask;
                     }
-                } else {
-                    spdlog::error("Unsupported work request type: {}", *opcode);
+                } else if (opcode != IBV_EXP_WR_SEND &&
+                           opcode != IBV_EXP_WR_SEND_WITH_IMM) {
+                    spdlog::error("unsupported work request type: {}", *opcode);
                     panic();
                 }
             }
@@ -428,7 +466,7 @@ protected:
     uint64_t swap_mask = 0;
 };
 
-typedef rdma_verb<ibv_exp_send_wr> rdma_send;
+typedef rdma_verb<ibv_exp_send_wr> rdma_send_family;
 typedef rdma_verb<ibv_recv_wr> rdma_recv;
 
 } // namespace rdmalib2

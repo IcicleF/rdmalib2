@@ -46,7 +46,7 @@ public:
                 spdlog::error("failed to query device attributes");
                 panic_with_errno();
             }
-            spdlog::trace("device {} has {} physical ports",
+            spdlog::trace("device {} has {} physical port(s)",
                           ibv_get_device_name(ctx->device),
                           dev_attr.phys_port_cnt);
 
@@ -57,13 +57,15 @@ public:
                     panic_with_errno();
                 }
 
-                // Use universal GID index 3 to fit both InfiniBand and RoCEv2
                 int gid_index = universal_gid_index % port_attr.gid_tbl_len;
                 ibv_gid gid = {};
                 if (ibv_query_gid(ctx, i, gid_index, &gid)) {
                     spdlog::error("failed to query port {}'s gid", i);
                     panic_with_errno();
                 }
+                spdlog::trace("port {}'s gid is {:x}-{:x}", i,
+                              gid.global.subnet_prefix,
+                              gid.global.interface_id);
 
                 port_attrs.emplace_back(gid, port_attr);
             }
@@ -107,20 +109,8 @@ public:
     rdma_context(const rdma_context &) = delete;
     rdma_context &operator=(const rdma_context &) = delete;
 
-    rdma_context(rdma_context &&other) noexcept
-        : ctx(other.ctx), pd(other.pd), rd(other.rd) {
-        other.ctx = nullptr;
-        other.pd = nullptr;
-        other.rd = nullptr;
-    }
-
-    rdma_context &operator=(rdma_context &&other) & noexcept {
-        if (this != &other) {
-            this->~rdma_context();
-            new (this) rdma_context(std::move(other));
-        }
-        return *this;
-    }
+    rdma_context(rdma_context &&other) = delete;
+    rdma_context &operator=(rdma_context &&other) = delete;
 
     ~rdma_context() {
         if (rd) {
@@ -172,28 +162,28 @@ public:
     }
 
 public:
-    typedef res_domain_hint_base<0, 0, 0> no_hints;
-    typedef res_domain_hint_base<IBV_EXP_RES_DOMAIN_THREAD_MODEL,
-                                 IBV_EXP_THREAD_SAFE, 0>
-        thread_safe;
-    typedef res_domain_hint_base<IBV_EXP_RES_DOMAIN_THREAD_MODEL,
-                                 IBV_EXP_THREAD_UNSAFE, 0>
-        thread_unsafe;
-    typedef res_domain_hint_base<IBV_EXP_RES_DOMAIN_THREAD_MODEL,
-                                 IBV_EXP_THREAD_SINGLE, 0>
-        thread_single;
-    typedef res_domain_hint_base<IBV_EXP_RES_DOMAIN_MSG_MODEL, 0,
-                                 IBV_EXP_MSG_DEFAULT>
-        msg_default;
-    typedef res_domain_hint_base<IBV_EXP_RES_DOMAIN_MSG_MODEL, 0,
-                                 IBV_EXP_MSG_HIGH_BW>
-        msg_high_bw;
-    typedef res_domain_hint_base<IBV_EXP_RES_DOMAIN_MSG_MODEL, 0,
-                                 IBV_EXP_MSG_LOW_LATENCY>
-        msg_low_latency;
-    typedef res_domain_hint_base<IBV_EXP_RES_DOMAIN_MSG_MODEL, 0,
-                                 IBV_EXP_MSG_FORCE_LOW_LATENCY>
-        msg_force_low_latency;
+    static constexpr res_domain_hint_base<0, 0, 0> no_hints = {};
+    static constexpr res_domain_hint_base<IBV_EXP_RES_DOMAIN_THREAD_MODEL,
+                                          IBV_EXP_THREAD_SAFE, 0>
+        thread_safe = {};
+    static constexpr res_domain_hint_base<IBV_EXP_RES_DOMAIN_THREAD_MODEL,
+                                          IBV_EXP_THREAD_UNSAFE, 0>
+        thread_unsafe = {};
+    static constexpr res_domain_hint_base<IBV_EXP_RES_DOMAIN_THREAD_MODEL,
+                                          IBV_EXP_THREAD_SINGLE, 0>
+        thread_single = {};
+    static constexpr res_domain_hint_base<IBV_EXP_RES_DOMAIN_MSG_MODEL, 0,
+                                          IBV_EXP_MSG_DEFAULT>
+        msg_default = {};
+    static constexpr res_domain_hint_base<IBV_EXP_RES_DOMAIN_MSG_MODEL, 0,
+                                          IBV_EXP_MSG_HIGH_BW>
+        msg_high_bw = {};
+    static constexpr res_domain_hint_base<IBV_EXP_RES_DOMAIN_MSG_MODEL, 0,
+                                          IBV_EXP_MSG_LOW_LATENCY>
+        msg_low_latency = {};
+    static constexpr res_domain_hint_base<IBV_EXP_RES_DOMAIN_MSG_MODEL, 0,
+                                          IBV_EXP_MSG_FORCE_LOW_LATENCY>
+        msg_force_low_latency = {};
 
 protected:
     static std::optional<std::tuple<ibv_context *, ibv_pd *>>
@@ -257,7 +247,8 @@ protected:
     std::vector<std::tuple<ibv_gid, ibv_exp_port_attr>> port_attrs;
 
 public:
-    static constexpr int universal_gid_index = 3;
+    // Use universal GID index 3 to fit both InfiniBand and RoCEv2
+    static constexpr int universal_gid_index = 0;
 };
 
 } // namespace rdmalib2

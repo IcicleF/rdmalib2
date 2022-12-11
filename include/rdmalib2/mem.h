@@ -206,11 +206,14 @@ class rdma_memory_slice {
     friend class rdma_memory_region;
 
 public:
-    rdma_memory_slice(rdma_memory_region const &region, void *ptr, size_t size)
-        : region(region), ptr(ptr), size(size) {}
+    rdma_memory_slice(rdma_memory_region const &region, size_t offset,
+                      size_t size)
+        : region(region),
+          ptr(add_void_ptr(region.get_ptr(), offset)),
+          size(size) {}
 
     rdma_memory_slice(rdma_memory_region const &region)
-        : rdma_memory_slice(region, region.get_ptr(), region.get_size()) {}
+        : rdma_memory_slice(region, 0, region.get_size()) {}
 
     ~rdma_memory_slice() = default;
 
@@ -243,7 +246,7 @@ public:
                           offset, offset + size, this->size);
             panic();
         }
-        return rdma_memory_slice{region, add_void_ptr(ptr, offset), size};
+        return rdma_memory_slice{region, offset, size};
     }
 
     rdma_memory_slice slice(size_t offset = 0) const {
@@ -292,7 +295,7 @@ inline rdma_memory_slice rdma_memory_region::slice(size_t offset,
                       offset, offset + size, this->size);
         panic();
     }
-    return rdma_memory_slice{*this, add_void_ptr(ptr, offset), size};
+    return rdma_memory_slice{*this, offset, size};
 }
 
 inline rdma_memory_slice rdma_memory_region::slice(size_t offset) const {

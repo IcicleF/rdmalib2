@@ -13,6 +13,7 @@ static constexpr int kQpDepth = 256;
 static constexpr int kCqDepth = 256;
 static constexpr uint32_t kMaxSge = 16;
 static constexpr uint32_t kMaxInlineData = 64;
+static constexpr int kMaxPollCq = 32;
 
 } // namespace rdmalib2
 
